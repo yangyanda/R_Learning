@@ -1,0 +1,346 @@
+###################################
+##### HKGs 和 TEGs 筛选 #####
+###################################
+#install.packages("ggthemes")
+#install.packages("RColorBrewer")
+
+### 一、前期准备
+# 加载必要的包
+library(dplyr)
+library(tidyr)
+library(data.table)
+library(ggplot2)
+
+# 读取表达量矩阵
+expr_matrix = read.table("final_counts_1483_sample.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+
+# 读取样本分组数据
+sample_group  = read.table("input_subtype_1483_sample.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+
+### 二、数据整理
+# 我们需要将expr_matrix的列名（样本名）与sample_group的样本名进行匹配，并为每个样本添加相应的组织类型信息。接下来，将expr_matrix转换为长格式。
+# 转换表达量矩阵为长格式
+expr_long <- pivot_longer(expr_matrix, 
+                          cols = -Gene_id, 
+                          names_to = "Sample", 
+                          values_to = "Expression")
+
+# 合并样本分组信息
+expr_long <- merge(expr_long, sample_group, by = "Sample")
+
+### 三、基础筛选
+## 3.1 HKGs 
+gene_stats <- expr_long %>%
+  group_by(Gene_id) %>%
+  summarize(median_expression = median(Expression),
+            cv = sd(Expression) / mean(Expression)) %>%
+  filter(median_expression > median(median_expression) & cv < 1)
+
+hkgs <- gene_stats
+
+# 从表达量矩阵中提取HKGs的表达数据
+hkgs_expr_matrix <- expr_matrix[expr_matrix$Gene_id %in% hkgs$Gene_id, ]
+
+# 设置行名为GeneID列的值
+rownames(hkgs_expr_matrix) <- hkgs_expr_matrix$Gene_id
+
+# 移除GeneID列，准备保存
+hkgs_expr_matrix <- hkgs_expr_matrix[,-1]
+
+
+#计算四分位数，并分组
+q1 <- quantile(hkgs$cv, 0.25)
+q3 <- quantile(hkgs$cv, 0.75)
+
+hkgs$Category <- with(hkgs, ifelse(cv < q1, "Low",
+                                             ifelse(cv > q3, "High", "Medium")))
+
+# 计算每个类别的基因数量
+category_counts <- table(hkgs$Category)
+category_data <- as.data.frame(category_counts)
+names(category_data) <- c("Category", "Count")
+
+# 选择配色方案
+colors <- brewer.pal(n = nrow(category_data), name = "Paired")
+
+# 绘制扇形图
+ggplot(category_data, aes(x = "", y = Count, fill = Category)) +
+  geom_bar(width = 1, stat = "identity", color = "white") +
+  coord_polar("y", start = 0) +
+  scale_fill_manual(values = colors) +
+  theme_void() + 
+  theme(legend.title = element_blank(),
+        legend.text = element_text(size = 12),
+        plot.title = element_text(hjust = 0.5)) +
+  labs(title = "Distribution of Genes by Variability Category") +
+  geom_text(aes(label = paste(Category, "(", Count, ")")),
+            position = position_stack(vjust = 0.5),
+            color = "black",
+            size = 4)
+
+# 保存HKGs列表
+write.table(hkgs, "HKGs_list.txt", row.names = FALSE,  quote = FALSE)
+
+# 保存HKGs表达量矩阵
+write.csv(hkgs_expr_matrix, "HKGs_Expression_Matrix.csv", row.names = TRUE)
+
+
+## 3.2 TEGs基础筛选
+# 将expr_long转换为data.table
+dt_expr_long <- as.data.table(expr_long)
+
+# 进行优化的计算
+tegs_list <- list()
+for(tissue in unique(dt_expr_long$Subtype)) {
+  # 使用data.table的语法进行操作，注意这里使用的是data.table的特定函数和操作符来优化计算
+  tissue_genes <- dt_expr_long[Subtype == tissue, .(
+    expression_sum = sum(Expression),
+    max_expression = max(Expression)
+  ), by = Gene_id][, total_expression_other_tissues := dt_expr_long[Subtype != tissue & Gene_id %in% Gene_id, sum(Expression), by = Gene_id]$V1][, `:=` (
+    is_top_25_percentile = max_expression > quantile(dt_expr_long[Subtype == tissue, Expression], 0.75),
+    is_greater_than_half_other_tissues = max_expression > 0.5 * total_expression_other_tissues,
+    is_greater_than_three_times_any = max_expression > 3 * total_expression_other_tissues
+  )][is_top_25_percentile & is_greater_than_half_other_tissues & is_greater_than_three_times_any, unique(Gene_id)]
+  
+  tegs_list[[tissue]] <- tissue_genes
+}
+
+# TEGs简要绘图
+# 计算每个组织的TEGs数量
+tegs_count <- sapply(tegs_list, length)
+
+# 转换为数据框，准备绘图
+tegs_count_df <- data.frame(
+  Tissue = names(tegs_count),
+  TEGs_Count = tegs_count
+)
+
+ggplot(tegs_count_df, aes(x = Tissue, y = TEGs_Count)) +
+  geom_bar(stat = "identity", fill = "skyblue") + # 使用geom_bar并设置stat="identity"来绘制条形图
+  geom_text(aes(label = TEGs_Count), vjust = -0.5) + # 添加数据标签
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +# 如果组织名称较长，可以倾斜X轴标签以避免重叠
+  labs(title = "TEGs Count by Tissue", x = "Tissue", y = "Count of TEGs")
+
+ggplot(tegs_count_df, aes(x = Tissue, y = TEGs_Count, fill = TEGs_Count)) +
+  geom_bar(stat = "identity") +
+  geom_text(aes(label = TEGs_Count), vjust = -0.5, size = 6, color = "black") + # 调整标签大小和颜色
+  scale_fill_gradient(low = "blue", high = "red") +# 添加颜色渐变
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 50, hjust = 1, size = 14, color = "black"),# 调整x轴文本大小和颜色
+        axis.text.y = element_text(size = 14, color = "black"),
+        axis.title = element_text(size = 16, color = "black"),# 调整轴标题大小和颜色
+        plot.title = element_text(size = 20, face = "bold", color = "black"),
+        legend.text = element_text(size = 14, color = "black"),# 调整图例文本大小和颜色
+        axis.line = element_line(color = "black"), # 确保坐标轴线显示
+        axis.ticks = element_line(color = "black")) + # 确保刻度显示
+  labs(title = "TEGs Count by Tissue", x = "Tissue", y = "Count of TEGs")
+
+
+## TGEs存储
+# 首先，创建一个空的数据框用于存储所有TEGs及其对应的组织名
+all_tegs_df <- data.frame(Tissue = character(), Gene_id = character(), stringsAsFactors = FALSE)
+
+# 遍历每个组织，将TEGs及其对应的组织名添加到数据框中
+for(tissue in names(tegs_list)) {
+  # 创建临时数据框存储当前组织的TEGs
+  temp_df <- data.frame(Tissue = tissue, Gene_id = tegs_list[[tissue]], stringsAsFactors = FALSE)
+  # 将临时数据框行绑定到总数据框
+  all_tegs_df <- rbind(all_tegs_df, temp_df)
+}
+
+# 保存包含所有组织TEGs的数据框到一个文件
+write.table(all_tegs_df, "All_TEGs_by_Tissue.txt", row.names = FALSE, quote = FALSE, sep = "\t")
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 四、进阶筛选
+## 4.1 TEGs基础筛选
+# 假设有两个数据框：fpkmMatrix（FPKM表达量矩阵）和hkgList（包含HKGs的Gene_id的向量）
+# fpkmMatrix的列包含Gene_id和FPKM值，hkgList包含所有的HKGs的Gene_id
+
+# 读取FPKM表达量矩阵（假设为CSV格式）
+fpkmMatrix = read.table("FPKM_1484(1.7w）.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F,row.names = 1)
+
+# 读取HKGs的Gene_id列表（假设为CSV格式，只有一列Gene_id）
+hkgList = read.table("HKGs.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+
+# 从fpkmMatrix中提取与HKGs的Gene_id相同的行
+hkgMatrix <- fpkmMatrix[hkgList$Gene_id, ]
+
+# 计算每个HKG的FPKM的平均数、中位数
+row_averages <- rowMeans(hkgMatrix)
+row_medians <- apply(hkgMatrix, 1, median)
+
+# 结果输出到一个新的数据框中，包含HKG的Gene_id和它们的平均FPKM值
+hkgList <- cbind(hkgList, Average_Expression = row_averages)
+hkgList <- cbind(hkgList, Median_Expression = row_medians)
+
+# 查看结果
+print(hkgList)
+
+# 存储结果
+write.table(hkgList, "HKGs_FPKM.txt", row.names = FALSE, quote = FALSE, sep = "\t")
+
+
+
+
+## 4.2 TEGs进阶筛选
+## 筛选要求
+#1. 基因在特定组织中的最大表达量是否大于该组织中所有表达值的75%分位数。
+#2. 基因在特定组织中的最大表达量是否大于其他组织中总表达量的30%分位数。
+#3. 基因在特定组织中的最大表达量是否大于其他组织中任何单个组织表达量的两倍
+
+fpkmMatrix_TEGs = read.table("FPKM_1484(1.7w）.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+
+
+expr_TEGs <- pivot_longer(fpkmMatrix_TEGs, 
+                          cols = -Gene_id, 
+                          names_to = "Sample", 
+                          values_to = "Expression")
+
+expr_TEGs <- merge(expr_TEGs, sample_group, by = "Sample")
+
+# 假设 expr_TEGs 已经是 data.table 类型，并且 sample_group 已经按照 "Sample" 与 expr_TEGs 合并
+expr_TEGs <- as.data.table(expr_TEGs)
+
+tegs_adjusted_list <- list()
+
+for(tissue in unique(expr_TEGs$Subtype)) {
+  # 获取特定组织中每个基因的最大表达量
+  tissue_data <- expr_TEGs[Subtype == tissue]
+  max_expressions <- tissue_data[, .(max_expression = max(Expression)), by = Gene_id]
+  
+  # 计算75%分位数
+  quantile_75 <- quantile(tissue_data$Expression, 0.75)
+  
+  # 对于其他组织的处理
+  other_tissue_data <- expr_TEGs[Subtype != tissue]
+  
+  # 按基因和组织分组，计算其他组织的总表达和最大表达
+  other_tissues_expressions <- other_tissue_data[, .(sum_expression = sum(Expression), max_expression = max(Expression)), by = .(Gene_id, Subtype)]
+  
+  # 获得每个基因在其他组织中的总表达和最大表达
+  other_tissue_sum_max <- other_tissues_expressions[, .(total_sum_expression = sum(sum_expression), max_of_max_expression = max(max_expression)), by = Gene_id]
+  
+  # 合并数据，进行条件判断
+  condition_checks <- merge(max_expressions, other_tissue_sum_max, by = "Gene_id")
+  condition_checks[, `:=` (is_above_quantile_75th = max_expression > quantile_75,
+                           is_greater_than_half_other_sum = max_expression > 0.3 * total_sum_expression,
+                           is_double_any_other_max = max_expression > 2 * max_of_max_expression)]
+  
+  # 根据条件筛选TEGs
+  valid_tegs <- condition_checks[is_above_quantile_75th & is_greater_than_half_other_sum & is_double_any_other_max, Gene_id]
+  
+  tegs_adjusted_list[[tissue]] <- valid_tegs
+}
+
+
+# 将列表转换为data.table以便存储
+tegs_dt <- rbindlist(lapply(names(tegs_adjusted_list), function(tissue) {
+  .SD <- data.table(Gene_id=tegs_adjusted_list[[tissue]], Tissue=tissue)
+}), fill=TRUE, idcol="Tissue")
+
+# 指定文件名
+filename <- "TEGs_adjusted_list.txt"
+
+# 保存到文件
+fwrite(tegs_dt, file=filename, sep="\t", col.names = TRUE, quote = FALSE)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+### 纠错 （可以不看）###
+
+# 首先，检查spleen组织中基因的表达情况
+spleen_data <- expr_TEGs[Subtype == "Spleen"]
+summary(spleen_data$Expression)  # 查看表达量的分布情况
+
+# 检查75%分位数的值
+quantile_75_spleen <- quantile(spleen_data$Expression, 0.75)
+quantile_75_spleen
+
+# 简化的筛选逻辑，仅以第一个条件为例
+spleen_genes <- spleen_data[, .(max_expression = max(Expression)), by = Gene_id]
+spleen_genes[, is_above_quantile_75th := max_expression > quantile_75_spleen]
+sum(spleen_genes$is_above_quantile_75th)  # 查看有多少基因满足第一个条件
+
+# 如果第一个条件就已经导致很少或没有基因通过筛选，考虑检查数据或调整条件
+
+
+
+table(expr_TEGs$Subtype)  # 查看不同组织类型的样本数量
+
+
+# 检查spleen组织的样本中是否包含NA
+sum(is.na(spleen_data$Expression))  # 计算NA的数量
+
+
+ ###备选
+# 1. 基因在特定组织中的最大表达量是否大于该组织中所有表达值的75%。
+# 2. 基因在特定组织中的最大表达量是否大于其他组织中总表达量的90%。
+# 3. 基因在特定组织中的最大表达量是否大于其他组织中任何单个组织表达量的90%
+
+tegs_adjusted_list <- list()
+
+for(tissue in unique(expr_TEGs$Subtype)) {
+  # 针对每种组织类型，找出满足以下条件的基因
+  tissue_data <- expr_TEGs[Subtype == tissue]
+  other_tissue_data <- expr_TEGs[Subtype != tissue]
+  
+  # 计算特定组织中所有表达值的75%分位数
+  quantile_75th <- quantile(tissue_data$Expression, 0.75)
+  
+  # 计算其他组织中每个基因的总表达量
+  other_tissue_sum <- other_tissue_data[, .(total_expression_other_tissues = sum(Expression)), by = Gene_id]
+  
+  # 计算其他组织中每个基因的90%分位数表达量
+  other_tissue_quantile_90th <- other_tissue_data[, .(quantile_90th = quantile(Expression, 0.9)), by = Gene_id]
+  
+  # 筛选出满足条件的基因
+  tissue_genes <- tissue_data[, .(max_expression = max(Expression)), by = Gene_id]
+  tissue_genes <- merge(tissue_genes, other_tissue_sum, by = "Gene_id")
+  tissue_genes <- merge(tissue_genes, other_tissue_quantile_90th, by = "Gene_id")
+  
+  # 应用条件筛选
+  tissue_genes <- tissue_genes[
+    max_expression > quantile_75th &
+      max_expression > 0.9 * total_expression_other_tissues &
+      max_expression > quantile_90th
+  ]
+  
+  tegs_adjusted_list[[tissue]] <- tissue_genes$Gene_id
+}
+
+
+
+
