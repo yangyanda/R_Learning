@@ -1,0 +1,122 @@
+#####################################
+#
+#   个性化相关性热图 
+#
+#####################################
+
+## 基础版（ggcorrplot） ###
+
+## 加载R包
+devtools::install_github("kassambara/ggcorrplot")
+
+library(ggplot2)
+library(ggcorrplot)
+# 创建相关性矩阵
+gene_exp <- read.table("cleaned_counts.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+head(gene_exp)
+corr <- round(cor(gene_exp), 1
+
+
+# 相关性计算（cor_pmat）
+p.mat <- cor_pmat(gene_exp)
+head（p.mat）
+
+# 简单绘制
+ggcorrplot(p.mat)
+
+
+# 个性化——圆形（circle）
+ggcorrplot(p.mat, method = "circle")
+
+# 个性化——层次聚类（hc.order）
+ggcorrplot(p.mat, hc.order = TRUE, outline.color = "white")
+
+# 个性化——上、下三角视图 
+#  full (默认)整个矩阵；upper上矩阵；lower下矩阵
+ggcorrplot(p.mat, hc.order = TRUE, type= "upper"，method = "number", outline.color = "white") 
+
+# 个性化——显著性标注
+ggcorrplot(p.mat, hc.order = TRUE, type = "lower", lab = TRUE)
+
+
+
+
+
+
+
+### 进阶版（corrplot） ###
+
+## 加载R包
+#devtools::install_github("kassambara/corrplot")
+library(corrplot)
+library(ggplot2)
+
+## 基础构建
+# 读取原始文件
+#data(mtcars) 示例文件
+
+gene_exp <- read.table("cleaned_counts.txt",sep = "\t",header = T,check.names = F,stringsAsFactors = F)
+head(gene_exp)
+
+# 构建相关性矩阵
+corr <- round(cor(gene_exp), 1)
+
+# 默认视图
+corrplot(corr)
+
+
+## 进阶绘图
+# 可选图样："circle", "square", "ellipse", "number", "shade", "color", "pie"
+corrplot(corr, method = c('number'))
+#corrplot(corr, method = c('square'))
+#corrplot(corr, method = c('ellipse'))
+#corrplot(corr, method = c('shade'))
+#corrplot(corr, method = c('color'))
+#corrplot(corr, method = c('pie'))
+
+# 自定义显著性颜色
+mycol <- colorRampPalette(c("#06a7cd", "white", "#e74a32"), alpha = TRUE)
+#mycol2 <- colorRampPalette(c("#0AA1FF","white", "#F5CC16"), alpha = TRUE)
+
+# 详细参数
+corrplot(corr, method = c('ellipse'), type = c('lower'), 
+         col = mycol(100),
+         outline = 'grey', #是否为图形添加外轮廓线，默认FLASE，可直接TRUE或指定颜色向量
+         order = c('AOE'), #排序/聚类方式选择："original", "AOE", "FPC", "hclust", "alphabet"
+         diag = FALSE, #是否展示对角线结果，默认TRUE
+         tl.cex = 1.2, #文本标签大小
+         tl.col = 'black', #文本标签颜色
+         #addgrid.col= 'grey' #格子轮廓颜色
+         addCoef.col = 'black', #在现有样式中添加相关性系数数字，并指定颜色
+         number.cex = 0.8, #相关性系数数字标签大小
+)
+
+
+
+## 高级绘图
+# 需要先画上三角，再画下三角，用add关键字表示在第一张图基础上添加第二张
+corrplot(corr, method = c('square'), 
+         type = c('upper'), 
+         col = mycol(100),
+         outline = 'grey', 
+         order = c('AOE'), 
+         diag = TRUE,
+         tl.cex = 1, #对角线文字大小
+         tl.col = 'black', #对角线文字颜色
+         tl.pos = 'd' #仅在对角线显示文本标签
+)
+corrplot(corr, add = TRUE,
+         method = c('number'), 
+         type = c('lower'), 
+         col = mycol(100),
+         order = c('AOE'), 
+         diag = FALSE, 
+         number.cex = 0.9,
+         tl.pos = 'n', #不显示文本标签
+         cl.pos = 'n' #不显示颜色图例
+)
+
+
+ggsave("my_corrplot.pdf", plot = last_plot(), width = 10, height = 10, dpi = 300)
+
+
