@@ -1,0 +1,153 @@
+#================================#
+#                                #
+#       模块和性状的关联         #
+#                                #
+#================================#
+# 一、包的加载
+#install.packages("MatrixEQTL")
+#install.packages("GenomicFeatures")
+library(MatrixEQTL)
+library(GenomicFeatures)
+library(rtracklayer) 
+library(parallel)
+
+# 二、数据加载
+## 路径设置
+getwd()
+base.dir = ("~/working/team_pig/blood_GTE/eqtl/Blood");
+
+## 基因型数据
+SNP_file_name <- paste(base.dir, "/geneotype.txt.gz", sep="")
+
+## 表达量数据
+Expression_file_name <- paste(base.dir, "/Blood_count.txt", sep="")
+
+## 样本协变量
+Covariates_file_name  <- paste(base.dir, "/covariates.txt", sep="")
+
+# 三、设置参数
+## p-value 阈值
+pvOutputThreshold = 1e-5
+
+## 模型选择 （modelANOVA or modelLINEAR or modelLINEAR_CROSS）
+useModel = modelLINEAR
+
+## 输出设置
+output_file_name = "eQTL_output.txt"
+
+# 四、数据预处理
+snps = SlicedData$new()
+snps$fileDelimiter = "\t"
+snps$fileOmitCharacters = "NA"
+snps$fileSkipRows = 1
+snps$fileSkipColumns = 1
+snps$fileSliceSize = 2000
+snps$LoadFile(SNP_file_name)
+
+gene = SlicedData$new()
+gene$fileDelimiter = "\t"
+gene$fileOmitCharacters = "NA"
+gene$fileSkipRows = 1
+gene$fileSkipColumns = 1
+gene$fileSliceSize = 2000
+gene$LoadFile(Expression_file_name)
+
+cvrt = SlicedData$new()
+cvrt$fileDelimiter = "\t"
+cvrt$fileOmitCharacters = "NA"
+cvrt$fileSkipRows = 1
+cvrt$fileSkipColumns = 1
+cvrt$LoadFile(Covariates_file_name)
+
+# 五、运行分析
+## 5.1 普通计算
+eQTL = Matrix_eQTL_engine(
+  snps = snps,
+  gene = gene,
+  cvrt = cvrt,
+  output_file_name = output_file_name,
+  pvOutputThreshold = pvOutputThreshold,
+  useModel = useModel,
+  errorCovariance = numeric(),
+  verbose = TRUE, #打印详细的进度信息和结果摘要
+  pvalue.hist = TRUE, #生成并显示 p-value 直方图
+  min.pv.by.genesnp = TRUE, #不输出“Gene-SNP”对的最小p-value
+  noFDRsaveMemory = FALSE #计算并输出 FDR
+)
+
+## 5.2 cis & trans 
+## 指定补充文件路径
+Snps_location_file_name = paste(base.dir, "/SNP_location", sep="");
+Gene_location_file_name = paste(base.dir, "/gene_location", sep="");
+
+## 定义cis和trans eQTLs输出文件路径
+output_file_name_cis = "cis_eQTL_output.txt"
+output_file_name_tra = "tra_eQTL_output.txt"
+
+## 设置报告显著关联的p值阈值
+pvOutputThreshold_cis = 2e-2;
+pvOutputThreshold_tra = 1e-2;
+
+## 指定误差协方差矩阵 - numeric()表示使用单位矩阵
+errorCovariance = numeric()
+
+# 定义SNP和基因考虑为cis-eQTLs的最大距离
+cisDist = 1e6;
+
+# 将SNP数据加载到SlicedData对象中
+snps = SlicedData$new()
+snps$fileDelimiter = "\t"
+snps$fileOmitCharacters = "NA"
+snps$fileSkipRows = 1
+snps$fileSkipColumns = 1
+snps$fileSliceSize = 2000
+snps$LoadFile(SNP_file_name)
+
+# 将基因表达数据加载到SlicedData对象中
+gene = SlicedData$new()
+gene$fileDelimiter = "\t"
+gene$fileOmitCharacters = "NA"
+gene$fileSkipRows = 1
+gene$fileSkipColumns = 1
+gene$fileSliceSize = 2000
+gene$LoadFile(Expression_file_name)
+
+# 如果有的话，加载协变量数据
+cvrt = SlicedData$new()
+cvrt$fileDelimiter = "\t"
+cvrt$fileOmitCharacters = "NA"
+cvrt$fileSkipRows = 1
+cvrt$fileSkipColumns = 1
+if(length(Covariates_file_name) > 0) {
+  cvrt$LoadFile(Covariates_file_name)
+}
+
+# 加载SNP和基因位置信息
+snpspos = read.table(Snps_location_file_name, header = TRUE, stringsAsFactors = FALSE)
+genepos = read.table(Gene_location_file_name, header = TRUE, stringsAsFactors = FALSE)
+
+# 运行Matrix eQTL分析
+ALL = Matrix_eQTL_main(
+  snps = snps,                         # SNP数据，之前已通过SlicedData对象加载
+  gene = gene,                         # 基因表达数据，之前已通过SlicedData对象加载
+  cvrt = cvrt,                         # 协变量数据，如果不使用则之前已设置为SlicedData的新实例
+  output_file_name = output_file_name_tra, # trans eQTL分析结果的输出文件名
+  pvOutputThreshold = pvOutputThreshold_tra, # trans eQTL显著性阈值
+  useModel = useModel,                 # 使用的线性模型，此处根据之前的设置
+  errorCovariance = errorCovariance,   # 误差协方差矩阵，若未提供，则使用单位矩阵
+  verbose = TRUE,                      # 是否打印详细信息
+  output_file_name.cis = output_file_name_cis, # cis eQTL分析结果的输出文件名
+  pvOutputThreshold.cis = pvOutputThreshold_cis, # cis eQTL显著性阈值
+  snpspos = snpspos,                   # SNP位置信息
+  genepos = genepos,                   # 基因位置信息
+  cisDist = cisDist,                   # 定义cis eQTL的SNP和基因之间的最大距离
+  pvalue.hist = "qqplot",              # 生成p值的QQ图，以评估p值分布是否符合预期
+  min.pv.by.genesnp = FALSE,           # 是否为每个基因-SNP对保存最小p值，设置为FALSE可以节省内存
+  noFDRsaveMemory = FALSE              # 是否禁用FDR计算来节省内存，此处保留FDR计算
+)
+
+
+
+
+
+
