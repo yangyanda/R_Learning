@@ -1,0 +1,51 @@
+#####################################
+#count —> TPM & FPKM 
+#
+#####################################
+
+# 加载必要的R包
+library(GenomicFeatures)
+library(dplyr)
+library(tidyverse)
+
+
+# 读取表达量count矩阵
+countMatrix <- read.table('all_counts.txt', header = TRUE, sep = '\t', row.names = 1)
+
+# 将第一列（基因ID）设置为行名
+rownames(countMatrix) <- countMatrix[[1]]  # 假设第一列是基因ID
+countMatrix <- countMatrix[-1]  # 移除原来的第一列
+# 现在counts_matrix的行名是基因ID，原来的第一列已经被移除
+
+
+# 指定GTF文件的位置
+gtfFile <- "/home/dell/working/team_pig/SV/ref/Sus_scrofa.Sscrofa11.1.110.gtf"
+# 从GTF文件创建一个TxDb对象
+txdb <- makeTxDbFromGFF(gtfFile)
+# 提取基因信息并计算基因长度
+geneLengths <- genes(txdb)
+geneLengthData <- as.data.frame(geneLengths)
+geneLengthData$length <- width(geneLengths)
+# geneLengthData$length是数值类型
+geneLengthData$length <- as.numeric(geneLengthData$length)
+
+# 计算RPK值
+rpk <- sweep(countMatrix, 1, geneLengthData$length / 1000, "/")
+# 计算FPKM
+fpkm <- rpk / sum(rpk) * 1e6
+# 计算TPM
+# 首先计算每个样本的总RPK
+total_rpk <- rowSums(rpk)
+# 确保total_rpk是一个向量
+if (!is.vector(total_rpk)) {
+  stop("total_rpk 不是一个向量，请检查 rpk 的结构。")
+}
+# 计算每个基因的TPM
+# 注意：这里我们假设rpk的每一列对应一个样本，total_rpk的长度等于rpk的列数
+tpm <- rpk / total_rpk * 1e6 * 1e-6
+# 查看结果
+View(fpkm)
+View(tpm)
+# 将结果保存到文件
+write.table(fpkm, file = "FPKM.txt", row.names = TRUE, sep = "\t")
+write.table(tpm, file = "TPM.txt", row.names = TRUE, sep = "\t")
